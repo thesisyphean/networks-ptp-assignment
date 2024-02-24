@@ -11,20 +11,12 @@ def main():
 
         sock.listen()
 
-        for _ in range(3):
+        while True:
             conn, addr = sock.accept()
 
             with conn:
-                print(f"Connected by {addr}")
-
-                while True:
-                    data = conn.recv(2048)
-
-                    # When the data is an empty bytes object, the connection was closed
-                    if not data:
-                        break
-
-                    conn.sendall(data + " KaraboTorturing4Life".encode())
+                username = conn.recv(2048)
+                print(f"Connected by {addr}, Username: {username}")
 
 if __name__ == "__main__":
     main()

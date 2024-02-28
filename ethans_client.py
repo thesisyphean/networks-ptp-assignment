@@ -26,7 +26,7 @@ class Client:
     
     def set_username(self):
         while True:
-            username = 
+            # username = 
             self.sock.sendall(...) # TODO: Protocol for setting 
 
     def run(self):

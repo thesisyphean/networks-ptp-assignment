@@ -11,36 +11,6 @@ class Command(Enum):
     REQUEST_USER_LIST = 4
     REQUEST_PTP_CONNECTION = 5
 
-# converts int to array of bits
-def bitfield(n):
-    return [1 if digit=='1' else 0 for digit in bin(n)[2:]]
-
-# converts array of bits to int
-# DOESNT WORK
-def bitfield_to_int(bitfield):
-    result = 0
-
-    for i in range(0, len(bitfield), -1):
-        result &= 1 << ()
-        
-    return result
-
-# converts with ascii vals
-# assumes bitfield length is a multiple of 8
-def bitfield_to_str(bitfield):
-    str = ""
-    try: 
-        for i in range(0, len(bitfield), 8):
-            str += chr(bitfield_to_int(bitfield[i:i + 8]))
-    except:
-        print("Invalid Username")
-        return
-    return str
-
-
-def complete_bitfield(bytes):
-    return list(itertools.chain_from_i)
-
 class User(Process):
     def __init__(self, conn, addr):
         super().__init__()
@@ -53,29 +23,34 @@ class User(Process):
         self.visible = False
         self.busy = False
 
-    # assumes input is bitfield starting at first command bit
+    # takes input of command bytes
     # 1 byte for command type, 8 bytes for param 1, 2 bytes for param 2
     # returns command for reply
-    def process_command(self, command_bits):
-        command_type = bitfield_to_int(command_bits[:8])
+    def process_command(self, command_bytes):
+        command_type = int.from_bytes(command_bytes[:1], 'big')
         # these indices are subject to change based on username length restrictions and encoding
-        param_1 = command_bits[8:72]
-        param_2 = command_bits[72:88]
-
+        param_1 = command_bytes[1:9]
+        param_2 = command_bytes[9:11]
+        
+        # print(Command.SEND_USERNAME)
+        # bruh wtf why is Command.SEND_USERNAME not evaluating to 1
+        # I may be using the enum wrong lmao, but I don't know why
         if command_type == Command.SEND_USERNAME:
-            name = bitfield_to_str(param_1)
-            if name is None:
-                # return decline username command
-                pass
-            else:
-                self.username = name
-                self.available = True
-                # add to available users
-                if bitfield_to_int(param_2) == 1:
-                    self.visible = True
+            name = param_1.decode('utf-8')
+            print(name)
+            for user in server.users:
+                if user.username == name:
+                    # return username taken message
+                    return
+            self.username = name
+            self.available = True
+            if int.from_bytes(param_2, 'big') == 1:
+                self.visible = True
                 
-                # send visible list 
-                # return accept username command
+                # send visible users list? May be simpler to just keep that as a separate 
+                # command and have the client side automatically request it on connection
+
+            return self.send_command(Command.ACCEPT_USERNAME)
 
         if command_type == Command.REQUEST_USER_LIST: 
             users = ""
@@ -95,20 +70,25 @@ class User(Process):
 
     def process_data_transfer(data_bytes):
         pass
-
-    def generate_command(command_name, param_1, param_2)
+    
+    # this is fun lmao
+    # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
+    def send_command(self, command_num, param_1=b'\x00'*8, param_2=b'\x00'*2):
+        self.conn.sendall(b'\x00' + command_num.to_bytes(1, 'big') + param_1 + param_2)
 
     def run(self):
         with self.conn:
             print(f"Connected by {self.addr}, Username: {self.username}")
             while True:
                 initial_byte = self.conn.recv(1)
-                if int.from_bytes(initial_byte) == 1:
+                if int.from_bytes(initial_byte, 'big') == 1:
                     # recieve rest of command
                     command_bytes = self.conn.recv(12)
-                    # not complete
-                    self.proccess_command(bitfield(int.from_bytes(command_bytes)))
-            
+                    self.process_command(command_bytes)
+                
+                else:
+                    # process invalid message (server is never sent a data transfer)
+                    pass
 
 class Server:
     # This IP adress is standard for the loopback interface
@@ -137,9 +117,6 @@ def main():
     global server
     server = Server()
     server.run()
-    # bitfield = [0, 0, 1, 0, 1, 0, 0, 1]
-    # print(bitfield_to_int(bitfield))
-    # print(bitfield_to_str(bitfield))
 
 if __name__ == "__main__":
     main()

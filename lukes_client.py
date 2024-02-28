@@ -16,18 +16,18 @@ class Colors:
 def colour(message, colour):
     return colour + message + Colors.END
 
-MAIN_MESSAGE = f"{colour("Welcome to ChatApp!", Colors.GREEN)}\n(1) List all users."
+# MAIN_MESSAGE = f"{colour("Welcome to ChatApp!", Colors.GREEN)}\n(1) List all users."
 
 class Client:
     def __init__(self, args):
-        self.username = args.username
+        # self.username = args.username
         self.server_ip_address = args.ip_address
-        self.server_port = args.server_port
+        self.server_port = args.port
     
-    def set_username(self):
-        while True:
-            username = 
-            self.sock.sendall(...) # TODO: Protocol for setting 
+    # def set_username(self):
+    #     while True:
+    #         # username = 
+    #         self.sock.sendall(...) # TODO: Protocol for setting 
 
     def run(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -35,15 +35,17 @@ class Client:
             print("Connected to the server!")
 
             self.sock = sock
-            self.set_username()
+            command_val = 1
+            sock.sendall(b'\x01' + b'\x01' + "aaaaaaaa".encode('utf-8') + b'\x00'*2)
+            # self.set_usernme()
 
 def main():
     parser = argparse.ArgumentParser(
         prog="ChatApp",
         description="A ChatApp client")
     
-    parser.add_argument("username",
-        help="The username other users will see")
+    # parser.add_argument("username",
+    #     help="The username other users will see")
 
     parser.add_argument("-i", "--ip_address",
         default="127.0.0.1",

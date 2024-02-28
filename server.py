@@ -22,12 +22,15 @@ class Server:
         self.users = []
 
     def run(self):
+        print("Server is running!")
+
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((self.HOST, self.PORT))
             sock.listen()
 
             while True:
                 conn, addr = sock.accept()
+
                 user = User(conn, addr)
                 self.users.append(user)
                 user.start()

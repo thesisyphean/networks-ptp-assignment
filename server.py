@@ -8,6 +8,8 @@ class Command(Enum):
     SEND_USERNAME = 1
     ACCEPT_USERNAME = 2
     DECLINE_USERNAME = 3
+    REQUEST_USER_LIST = 4
+    REQUEST_PTP_CONNECTION = 5
 
 # converts int to array of bits
 def bitfield(n):
@@ -72,18 +74,40 @@ class User(Process):
                 if bitfield_to_int(param_2) == 1:
                     self.visible = True
                 
+                # send visible list 
                 # return accept username command
+
+        if command_type == Command.REQUEST_USER_LIST: 
+            users = ""
+            for user in server.users:
+                if user.available and not user.busy:
+                    users += user
+                    users += ", "
+            users = users[:-1]
+            # generate data transfer message with user list and return
+
+        if command_type == Command.REQUEST_PTP_CONNECTION:
+            pass
+
+
 
         # if statements for each other command the server could recieve
 
     def process_data_transfer(data_bytes):
         pass
 
+    def generate_command(command_name, param_1, param_2)
+
     def run(self):
         with self.conn:
             print(f"Connected by {self.addr}, Username: {self.username}")
             while True:
                 initial_byte = self.conn.recv(1)
+                if int.from_bytes(initial_byte) == 1:
+                    # recieve rest of command
+                    command_bytes = self.conn.recv(12)
+                    # not complete
+                    self.proccess_command(bitfield(int.from_bytes(command_bytes)))
             
 
 class Server:
@@ -110,6 +134,7 @@ class Server:
                 user.start()
 
 def main():
+    global server
     server = Server()
     server.run()
     # bitfield = [0, 0, 1, 0, 1, 0, 0, 1]

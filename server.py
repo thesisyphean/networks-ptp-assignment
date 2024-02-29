@@ -15,9 +15,17 @@ class Command(Enum):
     DECLINE_USERNAME = 3
     REQUEST_USER_LIST = 4
     REQUEST_PTP_CONNECTION = 5
+    USER_NOT_AVAILABLE = 6
+    RELAY_PTP_REQUEST = 7
+    DECLINE_PTP_CONNECTION = 8
 
 
-class Client:
+# 0 pads bytes object to specified length
+def pad_bytes(bytes, length):
+    return bytes + b"\x00" * (length - len(bytes))
+
+
+class User:
     def __init__(self, sock, server):
         self.sock = sock
         self.server = server
@@ -46,6 +54,7 @@ class Client:
 
             if name in [n.username for n in self.server.users]:
                 log.debug(f"Username ({name}) taken")
+                self.send_command(Command.DECLINE_USERNAME.value)
                 return
 
             self.username = name
@@ -55,8 +64,8 @@ class Client:
 
                 # send visible users list? May be simpler to just keep that as a separate
                 # command and have the client side automatically request it on connection
-
-            return self.send_command(Command.ACCEPT_USERNAME.value)
+            self.send_command(Command.ACCEPT_USERNAME.value)
+            return
 
         elif command_type == Command.REQUEST_USER_LIST.value:
             pass
@@ -64,17 +73,41 @@ class Client:
             # generate data transfer message with user list and return
 
         elif command_type == Command.REQUEST_PTP_CONNECTION.value:
-            pass
+            username = param_1.decode("utf-8")
+            log.debug(username)
+            user = self.server.get_user(username)
+            if not user:
+                log.debug("not available")
+                self.send_command(Command.USER_NOT_AVAILABLE.value)
+                pass
+            else:
+                log.debug("relay request")
+                user.send_command(
+                    Command.RELAY_PTP_REQUEST.value, self.username.encode("utf-8")
+                )
+        elif command_type == Command.DECLINE_PTP_CONNECTION.value:
+            username = param_1.decode("utf-8")
+            log.debug(username)
+            user = self.server.get_user(username)
+            # ensure user still connected
+            if user:
+                user.send_command(
+                    Command.DECLINE_PTP_CONNECTION.value, self.username.encode("utf-8")
+                )
 
         # if statements for each other command the server could recieve
 
     def process_data_transfer(data_bytes):
         pass
 
-    # this is fun lmao
     # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
     def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 2):
-        self.conn.sendall(b"\x01" + command_num.to_bytes(1, "big") + param_1 + param_2)
+        self.conn.sendall(
+            b"\x01"
+            + command_num.to_bytes(1, "big")
+            + pad_bytes(param_1, 8)
+            + pad_bytes(param_2, 2)
+        )
 
     def run(self):
         self.sock.listen()
@@ -94,9 +127,6 @@ class Client:
                     # process invalid message (server is never sent a data transfer)
                     pass
 
-    def __str__(self):
-        return f"User<{self.username}>"
-
 
 class Server:
     # This IP adress is standard for the loopback interface
@@ -106,18 +136,32 @@ class Server:
 
     def __init__(self):
         self.sockets = []
-        self._users_lock = threading.Lock()
-        self._users: list[Client] = []
+        self.users_lock = threading.Lock()
+        self._users: list[User] = []
 
     @property
     def users(self):
-        with self._users_lock:
+        with self.users_lock:
             return self._users
 
     @users.setter
     def users(self, value):
-        with self._users_lock:
+        with self.users_lock:
             self._users = value
+
+    # def send_command_to_user(self, username, command_num, param_1, param_2):
+    #     with self._users_lock:
+    #         for user in self.users:
+    #             if user.username == username:
+    #                 user.send_command(command_num, param_1, param_2)
+
+    def get_user(self, username):
+        with self.users_lock:
+            for user in self._users:
+                log.debug(user.username)
+                if user.username == username:
+                    return user
+        return
 
     def run(self):
         log.info("Server is running!")
@@ -136,7 +180,7 @@ class Server:
 
                 # Create a user connection instance and pass a reference to
                 # the current state.
-                user = Client(new_sock, self)
+                user = User(new_sock, self)
                 self.users.append(user)
 
                 # We don't need to track the thread lifecycle here

@@ -11,15 +11,21 @@ logging.basicConfig(level=logging.DEBUG)
 
 class Command(Enum):
     ACCEPT_CONNECTION = 0
-    SEND_USERNAME = 1
-    ACCEPT_USERNAME = 2
-    DECLINE_USERNAME = 3
+    # SEND_USERNAME = 1
+    # ACCEPT_USERNAME = 2
+    # DECLINE_USERNAME = 3
     REQUEST_USER_LIST = 4
     REQUEST_PTP_CONNECTION = 6
     USER_NOT_AVAILABLE = 7
     RELAY_PTP_REQUEST = 8
     DECLINE_PTP_CONNECTION = 9
     ACCEPT_PTP_CONNECTION = 10
+    REGISTER = 11
+    DECLINE_REGISTER = 12
+    LOGIN = 13
+    DECLINE_LOGIN = 14
+    ALREADY_LOGGED_IN = 15
+    ACCEPT_LOGIN = 16
 
 
 def ip_address_to_int(ip_address):
@@ -41,6 +47,7 @@ class User:
         self.server = server
 
         self.username = ""
+        self.password = ""
         self.available = False
         # not visible until specified as such
         self.visible = False
@@ -57,28 +64,46 @@ class User:
         param_1 = command_bytes[1:9]
         param_2 = command_bytes[9:17]
 
-        if command_type == Command.SEND_USERNAME.value:
+        if command_type == Command.REGISTER.value:
             name = param_1.decode("utf-8")
-            log.info(name)
-            log.debug(self.server.users)
+            password = param_2.decode("utf-8")
 
-            if name in [n.username for n in self.server.users]:
+            if name in [n[0] for n in self.server.registered_users]:
                 log.debug(f"Username ({name}) taken")
-                self.send_command(Command.DECLINE_USERNAME.value)
+                self.send_command(Command.DECLINE_REGISTER.value)
                 return
 
             self.username = name
+            self.password = password
             self.available = True
-            if int.from_bytes(param_2, "little") == 1:
-                self.visible = True
+            self.server.add_registered_user((name, password))
 
-                # send visible users list? May be simpler to just keep that as a separate
-                # command and have the client side automatically request it on connection
-            self.send_command(Command.ACCEPT_USERNAME.value)
+            self.send_command(Command.ACCEPT_LOGIN.value, name.encode("utf-8"))
+            return
+
+        elif command_type == Command.LOGIN.value:
+            name = param_1.decode("utf-8")
+            password = param_2.decode("utf-8")
+            log.info(name)
+            log.debug(self.server.users)
+
+            # Decline login if username in list of online users
+            if name in [n.username for n in self.server.users]:
+                self.send_command(Command.ALREADY_LOGGED_IN.value)
+                return
+
+            elif (name, password) in self.server.registered_users:
+                self.username = name
+                self.available = True
+                self.send_command(Command.ACCEPT_LOGIN.value, name.encode("utf-8"))
+                return
+
+            self.send_command(Command.DECLINE_LOGIN.value)
 
         elif command_type == Command.REQUEST_USER_LIST.value:
             data = (", ".join(self.server.get_user_list())).encode("utf-8")
             self.send_data_transfer(Command.SEND_USER_LIST.value, 0, len(data), data)
+            return
 
         elif command_type == Command.REQUEST_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
@@ -87,12 +112,13 @@ class User:
             if not user:
                 log.debug("not available")
                 self.send_command(Command.USER_NOT_AVAILABLE.value)
-                pass
+                return
             else:
                 log.debug("relay request")
                 user.send_command(
                     Command.RELAY_PTP_REQUEST.value, self.username.encode("utf-8")
                 )
+                return
 
         elif command_type == Command.DECLINE_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
@@ -103,6 +129,7 @@ class User:
                 user.send_command(
                     Command.DECLINE_PTP_CONNECTION.value, self.username.encode("utf-8")
                 )
+                return
 
         elif command_type == Command.ACCEPT_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
@@ -116,9 +143,6 @@ class User:
             )
 
         # if statements for each other command the server could recieve
-
-    def process_data_transfer(data_bytes):
-        pass
 
     # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
     def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
@@ -144,20 +168,25 @@ class User:
     def run(self):
         self.sock.listen()
         self.conn, self.addr = self.sock.accept()
+        try:
+            with self.conn:
+                log.info(f"Connected by {self.addr}, Username: {self.username}")
 
-        with self.conn:
-            log.info(f"Connected by {self.addr}, Username: {self.username}")
+                while True:
+                    initial_byte = self.conn.recv(1)
+                    if initial_byte[0] == 1:
+                        # recieve rest of command
+                        command_bytes = self.conn.recv(17)
+                        self.process_command(command_bytes)
 
-            while True:
-                initial_byte = self.conn.recv(1)
-                if initial_byte[0] == 1:
-                    # recieve rest of command
-                    command_bytes = self.conn.recv(17)
-                    self.process_command(command_bytes)
-
-                else:
-                    # process invalid message (server is never sent a data transfer)
-                    pass
+                    else:
+                        # process invalid message (server is never sent a data transfer)
+                        pass
+        # TODO
+        # doesn't work cause of with statement :(
+        except ():
+            log.debug("Socked closed")
+            self.server.remove_user(self)
 
 
 class Server:
@@ -169,7 +198,11 @@ class Server:
     def __init__(self):
         self.sockets = []
         self.users_lock = threading.Lock()
+        # TODO manage users closing connection and remove them from user list (not registered users though)
         self._users = []
+        self._registered_users_lock = threading.Lock()
+        # list of tuples: (username, password)
+        self._registered_users = []
 
     @property
     def users(self):
@@ -181,6 +214,15 @@ class Server:
         with self.users_lock:
             self._users = value
 
+    @property
+    def registered_users(self):
+        with self._registered_users_lock:
+            return self._registered_users
+
+    def add_registered_user(self, username):
+        with self._registered_users_lock:
+            self._registered_users.append(username)
+
     def get_user(self, username):
         for user in self.users:
             log.debug(user.username)
@@ -189,6 +231,12 @@ class Server:
 
     def get_user_list(self):
         return [user.username for user in self.users]
+
+    def remove_user(self, username):
+        for user in self.users:
+            if user.username == username:
+                self.users.remove(user)
+                return
 
     def run(self):
         log.info("Server is running!")

@@ -2,45 +2,42 @@ import argparse
 import socket
 from enum import Enum
 import logging
+import struct
+import random
+from server import Command
+from threading import Thread
+import threading
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
 
-# TODO: Cut these down
-class Colors:
-    HEADER = "\033[95m"
-    OKBLUE = "\033[94m"
-    OKCYAN = "\033[96m"
-    GREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    END = "\033[0m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
-
-
-class Command(Enum):
-    ACCEPT_CONNECTION = 0
-    SEND_USERNAME = 1
-    ACCEPT_USERNAME = 2
-    DECLINE_USERNAME = 3
-    REQUEST_USER_LIST = 4
-    REQUEST_PTP_CONNECTION = 5
-    USER_NOT_AVAILABLE = 6
-    RELAY_PTP_REQUEST = 7
-    DECLINE_PTP_CONNECTION = 8
-
-
-def colour(message, colour):
-    return colour + message + Colors.END
-
-
-# MAIN_MESSAGE = f"{colour("Welcome to ChatApp!", Colors.GREEN)}\n(1) List all users."
-
-
 def pad_bytes(bytes, length):
     return bytes + b"\x00" * (length - len(bytes))
+
+
+def ip_address_to_int(ip_address):
+    return struct.unpack("!L", socket.inet_aton(ip_address))[0]
+
+
+def int_to_ip_address(integer):
+    return socket.inet_ntoa(struct.pack("!L", integer))
+
+
+class Connection:
+    def __init__(self, sock, client, username):
+        self.sock = sock
+        self.client = client
+        self.username = username
+
+    def run(self):
+        log.debug(f"New thread connected to {self.username}")
+        with self.sock:
+            msg = "hooooowzit".encode("utf-8")
+            self.sock.sendall(msg)
+            # while True:
+            data = self.sock.recv(10)
+            print(data.decode())
 
 
 class Client:
@@ -49,6 +46,8 @@ class Client:
         self.visibility_preference = vis
         self.username = ""
         self.username_accepted = False
+        self.ip_address = "127.0.0.1"
+        self.connections = []
 
     def run(self):
 
@@ -60,7 +59,7 @@ class Client:
 
         while True:
             if self.sock.recv(1)[0] == 1:
-                command_bytes = self.sock.recv(12)
+                command_bytes = self.sock.recv(17)
                 self.process_command(command_bytes)
 
             if not self.username_accepted:
@@ -76,14 +75,14 @@ class Client:
         command_type = command_bytes[0]
         # these indices are subject to change based on username length restrictions and encoding
         param_1 = command_bytes[1:9]
-        param_2 = command_bytes[9:11]
+        param_2 = command_bytes[9:18]
 
         if command_type == Command.ACCEPT_USERNAME.value:
             print("Username accepted")
             self.username_accepted = True
             if input("send connection request? ") == "yes":
                 self.send_command(
-                    Command.REQUEST_PTP_CONNECTION.value, "bbbbbbbb".encode("utf-8")
+                    Command.REQUEST_PTP_CONNECTION.value, "b".encode("utf-8")
                 )
 
         elif command_type == Command.DECLINE_USERNAME.value:
@@ -95,7 +94,30 @@ class Client:
                 f"The user {param_1.decode()} has requested a peer to peer connection"
             )
             if input("Would you like to accept this connection? (yes/no): ") == "yes":
-                pass
+                ip = ip_address_to_int(self.ip_address)
+                port = 10000 + random.randint(0, 10000)
+                log.debug(f"Port: {port}, ip: {ip}")
+
+                # create new socket and bind to new port
+                new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                new_sock.bind((self.ip_address, port))
+
+                log.debug(ip.to_bytes(4, "little") + port.to_bytes(2, "little"))
+                # notify requesting client
+                self.send_command(
+                    Command.ACCEPT_PTP_CONNECTION.value,
+                    param_1,
+                    ip.to_bytes(4, "little") + port.to_bytes(2, "little"),
+                )
+                new_sock.listen()
+                conn, addr = new_sock.accept()
+                # Create a connection instance and pass a reference to
+                # the current state.
+                connection = Connection(conn, self, param_1.decode())
+                self.connections.append(connection)
+
+                Thread(target=connection.run).start()
+
             else:
                 self.send_command(Command.DECLINE_PTP_CONNECTION.value, param_1)
         elif command_type == Command.USER_NOT_AVAILABLE.value:
@@ -103,13 +125,27 @@ class Client:
         elif command_type == Command.DECLINE_PTP_CONNECTION.value:
             print(f"The user {param_1.decode()} has declined a peer to peer connection")
 
+        elif command_type == Command.ACCEPT_PTP_CONNECTION.value:
+            username = param_1.decode()
+            log.debug(f"Acception recieved from {username}")
+            ip_address = int_to_ip_address(int.from_bytes(param_2[:4], "little"))
+            port = int.from_bytes(param_2[4:6], "little")
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.connect((ip_address, port))
+                connection = Connection(sock, self, username)
+
+                self.connections.append(connection)
+
+                Thread(target=connection.run).start()
+
     # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
-    def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 2):
+    def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
         self.sock.sendall(
             b"\x01"
-            + command_num.to_bytes(1, "big")
+            + command_num.to_bytes(1, "little")
             + pad_bytes(param_1, 8)
-            + pad_bytes(param_2, 2)
+            + pad_bytes(param_2, 8)
         )
 
 

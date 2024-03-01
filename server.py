@@ -3,6 +3,7 @@ from threading import Thread
 import threading
 from enum import Enum
 import logging
+import struct
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -14,10 +15,19 @@ class Command(Enum):
     ACCEPT_USERNAME = 2
     DECLINE_USERNAME = 3
     REQUEST_USER_LIST = 4
-    REQUEST_PTP_CONNECTION = 5
-    USER_NOT_AVAILABLE = 6
-    RELAY_PTP_REQUEST = 7
-    DECLINE_PTP_CONNECTION = 8
+    REQUEST_PTP_CONNECTION = 6
+    USER_NOT_AVAILABLE = 7
+    RELAY_PTP_REQUEST = 8
+    DECLINE_PTP_CONNECTION = 9
+    ACCEPT_PTP_CONNECTION = 10
+
+
+def ip_address_to_int(ip_address):
+    return struct.unpack("!L", socket.inet_aton(ip_address))[0]
+
+
+def int_to_ip_address(integer):
+    return socket.inet_ntoa(struct.pack("!L", integer))
 
 
 # 0 pads bytes object to specified length
@@ -45,7 +55,7 @@ class User:
         command_type = command_bytes[0]
         # these indices are subject to change based on username length restrictions and encoding
         param_1 = command_bytes[1:9]
-        param_2 = command_bytes[9:11]
+        param_2 = command_bytes[9:17]
 
         if command_type == Command.SEND_USERNAME.value:
             name = param_1.decode("utf-8")
@@ -59,18 +69,16 @@ class User:
 
             self.username = name
             self.available = True
-            if int.from_bytes(param_2, "big") == 1:
+            if int.from_bytes(param_2, "little") == 1:
                 self.visible = True
 
                 # send visible users list? May be simpler to just keep that as a separate
                 # command and have the client side automatically request it on connection
             self.send_command(Command.ACCEPT_USERNAME.value)
-            return
 
         elif command_type == Command.REQUEST_USER_LIST.value:
-            pass
-            # users = self.server.get_users()
-            # generate data transfer message with user list and return
+            data = (", ".join(self.server.get_user_list())).encode("utf-8")
+            self.send_data_transfer(Command.SEND_USER_LIST.value, 0, len(data), data)
 
         elif command_type == Command.REQUEST_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
@@ -85,6 +93,7 @@ class User:
                 user.send_command(
                     Command.RELAY_PTP_REQUEST.value, self.username.encode("utf-8")
                 )
+
         elif command_type == Command.DECLINE_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
             log.debug(username)
@@ -95,18 +104,41 @@ class User:
                     Command.DECLINE_PTP_CONNECTION.value, self.username.encode("utf-8")
                 )
 
+        elif command_type == Command.ACCEPT_PTP_CONNECTION.value:
+            username = param_1.decode("utf-8")
+            connection_data = param_2
+            user = self.server.get_user(username)
+
+            user.send_command(
+                Command.ACCEPT_PTP_CONNECTION.value,
+                self.username.encode("utf-8"),
+                connection_data,
+            )
+
         # if statements for each other command the server could recieve
 
     def process_data_transfer(data_bytes):
         pass
 
     # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
-    def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 2):
+    def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
         self.conn.sendall(
             b"\x01"
-            + command_num.to_bytes(1, "big")
+            # TODO: Maybe give this a test?
+            + command_num.to_bytes(1, "little")
             + pad_bytes(param_1, 8)
-            + pad_bytes(param_2, 2)
+            + pad_bytes(param_2, 8)
+        )
+
+    def send_data_transfer(self, message, identifier_length, data_length, data):
+        self.conn.sendall(
+            b"\x80"
+            if message
+            else b"\xc0"
+            # TODO: Same here
+            + identifier_length.to_bytes(1, "little")
+            + data_length.to_bytes(4, "little")
+            + data
         )
 
     def run(self):
@@ -120,7 +152,7 @@ class User:
                 initial_byte = self.conn.recv(1)
                 if initial_byte[0] == 1:
                     # recieve rest of command
-                    command_bytes = self.conn.recv(12)
+                    command_bytes = self.conn.recv(17)
                     self.process_command(command_bytes)
 
                 else:
@@ -137,7 +169,7 @@ class Server:
     def __init__(self):
         self.sockets = []
         self.users_lock = threading.Lock()
-        self._users: list[User] = []
+        self._users = []
 
     @property
     def users(self):
@@ -149,19 +181,14 @@ class Server:
         with self.users_lock:
             self._users = value
 
-    # def send_command_to_user(self, username, command_num, param_1, param_2):
-    #     with self._users_lock:
-    #         for user in self.users:
-    #             if user.username == username:
-    #                 user.send_command(command_num, param_1, param_2)
-
     def get_user(self, username):
-        with self.users_lock:
-            for user in self._users:
-                log.debug(user.username)
-                if user.username == username:
-                    return user
-        return
+        for user in self.users:
+            log.debug(user.username)
+            if user.username == username:
+                return user
+
+    def get_user_list(self):
+        return [user.username for user in self.users]
 
     def run(self):
         log.info("Server is running!")
@@ -183,11 +210,7 @@ class Server:
                 user = User(new_sock, self)
                 self.users.append(user)
 
-                # We don't need to track the thread lifecycle here
                 Thread(target=user.run).start()
-
-    def get_available_users(self):
-        return ", ".join([user.username for user in self.users])
 
 
 def main():

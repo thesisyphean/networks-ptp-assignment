@@ -1,5 +1,5 @@
 import socket
-from threading import Thread
+from threading import self, Thread
 import threading
 from enum import Enum
 import logging

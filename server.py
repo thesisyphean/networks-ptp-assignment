@@ -156,37 +156,33 @@ class User:
             + data
         )
 
-    # TODO Not entirely sure what's going on here, so just going to leave it
     def run(self):
         self.sock.listen()
         self.conn, self.addr = self.sock.accept()
-        try:
-            with self.conn:
-                log.info(
-                    f"Connected by {self.addr}, Username: {self.username}")
+        with self.conn:
+            log.info(
+                f"Connected by {self.addr}, Username: {self.username}")
 
-                while True:
-                    initial_byte = self.conn.recv(1)
+            while True:
+                initial_byte = self.conn.recv(1)
 
-                    # The connection was closed without signout by the client
-                    if initial_byte == 0:
-                        log.debug("Connection closed")
-                        self.server.remove_user(self)
-                        break
+                # The connection was closed without signout by the client
+                if initial_byte == 0:
+                    log.debug("Connection closed")
+                    self.server.remove_user(self)
+                    break
 
-                    if initial_byte[0] == 1:
-                        # recieve rest of Message
-                        Message_bytes = self.conn.recv(17)
-                        self.process_command(Message_bytes)
+                if initial_byte[0] == 1:
+                    # Recieve rest of message
+                    command_bytes = self.conn.recv(17)
+                    self.process_command(command_bytes)
 
-                    else:
-                        # process invalid message (server is never sent a data transfer)
-                        pass
-        # TODO
-        # doesn't work cause of with statement :(
-        except ():
-            log.debug("Socked closed")
-            self.server.remove_user(self)
+                # The server is *never* sent a data transfer by the client
+                # This is assumed to be malicious
+                else:
+                    log.debug("Data transfer received, closing connection")
+                    self.server.remove_user(self)
+                    break
 
 
 class Server:

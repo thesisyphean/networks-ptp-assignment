@@ -21,7 +21,7 @@ class Message(Enum):
     RELAY_PTP_REQUEST = 8
     DECLINE_PTP_CONNECTION = 9
     ACCEPT_PTP_CONNECTION = 10
-
+    SIGN_OUT = 11
 
 # 0 pads bytes object to specified length
 def pad_bytes(bytes, length):
@@ -53,7 +53,7 @@ class User:
         param_1 = command_bytes[1:9]
         param_2 = command_bytes[9:17]
 
-        if command_type == Message.REGISTER.value:
+        if command_type == Message.SIGN_UP.value:
             username = param_1.decode("utf-8")
             password = param_2.decode("utf-8")
 
@@ -86,16 +86,21 @@ class User:
                 self.password = password
                 self.registered = True
 
-                self.send_command(Message.ACCEPT_SIGN_IN.value,
-                                  name.encode("utf-8"))
+                self.send_command(Message.ACCEPT_SIGN_IN.value)
                 return
 
             self.send_command(Message.DECLINE_LOGIN.value)
 
         elif command_type == Message.REQUEST_USER_LIST.value:
-            data = (", ".join(self.server.get_user_list())).encode("utf-8")
-            self.send_data_transfer(
-                Message.SEND_USER_LIST.value, 0, len(data), data)
+            users = self.server.get_user_list()
+
+            if len(users) == 0:
+                data = "No visible users"
+            else:
+                data = (", ".join(self.server.get_user_list()))
+
+            log.debug(f"Sending data transfer: {data}")
+            self.send_data_transfer(True, 0, len(data), data.encode())
 
         elif command_type == Message.REQUEST_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
@@ -139,7 +144,6 @@ class User:
     def send_command(self, Message_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
         self.conn.sendall(
             b"\x01"
-            # TODO: Maybe give this a test?
             + Message_num.to_bytes(1, "little")
             + pad_bytes(param_1, 8)
             + pad_bytes(param_2, 8)
@@ -147,10 +151,9 @@ class User:
 
     def send_data_transfer(self, message, identifier_length, data_length, data):
         self.conn.sendall(
-            b"\x80"
+            (b"\x80"
             if message
-            else b"\xc0"
-            # TODO: Same here
+            else b"\xc0")
             + identifier_length.to_bytes(1, "little")
             + data_length.to_bytes(4, "little")
             + data

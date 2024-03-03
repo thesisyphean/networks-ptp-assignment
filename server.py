@@ -167,6 +167,13 @@ class User:
 
                 while True:
                     initial_byte = self.conn.recv(1)
+
+                    # The connection was closed without signout by the client
+                    if initial_byte == 0:
+                        log.debug("Connection closed")
+                        self.server.remove_user(self)
+                        break
+
                     if initial_byte[0] == 1:
                         # recieve rest of Message
                         Message_bytes = self.conn.recv(17)

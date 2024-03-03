@@ -22,6 +22,7 @@ class Message(Enum):
     DECLINE_PTP_CONNECTION = 9
     ACCEPT_PTP_CONNECTION = 10
     SIGN_OUT = 11
+    ALREADY_LOGGED_IN = 12
 
 # 0 pads bytes object to specified length
 def pad_bytes(bytes, length):
@@ -75,7 +76,7 @@ class User:
             # Decline login if username in list of registered users
             if username in [n.username for n in self.server.users]:
                 # TODO: Error code enum?
-                self.send_command(Message.DECLINE_SIGN_IN.value, 1)
+                self.send_command(Message.ALREADY_LOGGED_IN.value)
                 return
 
             registered_users = self.server.registered_users
@@ -167,7 +168,7 @@ class User:
                 initial_byte = self.conn.recv(1)
 
                 # The connection was closed without signout by the client
-                if initial_byte == 0:
+                if initial_byte == b"":
                     log.debug("Connection closed")
                     self.server.remove_user(self)
                     break

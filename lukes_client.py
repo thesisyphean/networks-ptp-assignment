@@ -4,7 +4,7 @@ from enum import Enum
 import logging
 import struct
 import random
-from server import Command
+from old_server import Command
 from threading import Thread
 import threading
 

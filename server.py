@@ -33,7 +33,6 @@ class User:
         self.sock = sock
         self.server = server
 
-        # TODO: Make sure these are set somewhere
         self.username = None
         self.password = None
 
@@ -41,8 +40,7 @@ class User:
         # Not visible until specified as such
         self.visible = False
 
-    def process_Message(self, command_bytes):
-        # TODO: Update the docstrings
+    def process_command(self, command_bytes):
         """
         takes input of Message bytes
         1 byte for Message type, 8 bytes for param 1, 2 bytes for param 2
@@ -95,7 +93,7 @@ class User:
             users = self.server.get_user_list()
 
             if len(users) == 0:
-                data = "No visible users"
+                data = ""
             else:
                 data = (", ".join(self.server.get_user_list()))
 
@@ -140,7 +138,6 @@ class User:
             )
 
     # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
-    # TODO: Feel like this should be ints by default
     def send_command(self, Message_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
         self.conn.sendall(
             b"\x01"
@@ -159,7 +156,7 @@ class User:
             + data
         )
 
-    # TODO What the fuck??
+    # TODO Not entirely sure what's going on here, so just going to leave it
     def run(self):
         self.sock.listen()
         self.conn, self.addr = self.sock.accept()
@@ -173,7 +170,7 @@ class User:
                     if initial_byte[0] == 1:
                         # recieve rest of Message
                         Message_bytes = self.conn.recv(17)
-                        self.process_Message(Message_bytes)
+                        self.process_command(Message_bytes)
 
                     else:
                         # process invalid message (server is never sent a data transfer)

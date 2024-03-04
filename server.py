@@ -165,7 +165,12 @@ class User:
                 f"Connected by {self.addr}, Username: {self.username}")
 
             while True:
-                initial_byte = self.conn.recv(1)
+                try:
+                    initial_byte = self.conn.recv(1)
+                except:
+                    log.debug("Connection forcibly closed")
+                    self.server.remove_user(self)
+                    break
 
                 # The connection was closed without signout by the client
                 if initial_byte == b"":

@@ -4,6 +4,8 @@ from server import Message
 import textwrap
 import struct
 import random
+from threading import Thread, Lock
+import time
 
 # These have been pulled from the Blender build scripts
 # Terminal colours are changed by inserting the escape sequence
@@ -45,6 +47,7 @@ class Client:
         self.signed_up = args.signin
 
         self.ptp_requests = []
+        self.chats = []
 
     def command(self, command_type, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
         self.server.sendall(
@@ -58,8 +61,6 @@ class Client:
         # Create and bind the server socket
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.connect((self.server_ip_address, self.server_port))
-        # This ensures that the socket can be used with coroutines
-        # self.server.setblocking(False)
 
         # Get the personal socket that the server will use
         self.server_port = int.from_bytes(self.server.recv(2), "little")
@@ -75,13 +76,14 @@ class Client:
             self.sign_up()
 
         while True:
-            print(textwrap.dedent("""\
+            print(textwrap.dedent("""
                   You can:
                   (1) Request the user list
                   (2) Request a PTP connection
                   (3) Accept a PTP connection
                   (4) Enter an active chat
                   (5) Sign out from the server
+                  (6) Refresh
                   Please enter your choice as a number:"""))
 
             choice = input()
@@ -101,8 +103,43 @@ class Client:
                 case 5:
                     self.sign_out()
                     break
+                case 6:
+                    # This is simply to recheck for messages from the server
+                    pass
                 case _:
                     print("Unknown request")
+
+            self.check_for_requests()
+    
+    def check_for_requests(self):
+        self.server.setblocking(False)
+
+        # If there is no data, recv will throw an error which will be caught and ignored
+        try:
+            # The only messages we receive from the server at this point
+            # are requests, or accepted or declined requests
+            response = self.server.recv(MESSAGE_BYTE_COUNT)
+            response_type = response[1]
+
+            if response_type == Message.RELAY_PTP_REQUEST.value:
+                username = response[2:10].decode("utf-8").rstrip("\0") # Param 1
+                self.ptp_requests.append(username)
+
+            if response_type == Message.ACCEPT_PTP_CONNECTION.value:
+                username = response[2:10].decode("utf-8").rstrip("\0") # Param 1
+                conn_info = response[10:17] # Param 2
+
+                chat = Chat(username)
+
+                chat.host = int_to_ip_address(int.from_bytes(conn_info[:4], "little"))
+                chat.tcp_port = int.from_bytes(conn_info[4:6], "little")
+
+                self.chats.append(chat)
+                Thread(target=chat.start_requester).start()
+        except:
+            pass
+    
+        self.server.setblocking(True)
 
     def sign_up(self):
         self.password = input(
@@ -119,7 +156,7 @@ class Client:
                 print("You've successfully signed up to the server!")
                 break
 
-            if response_type == Message.DECLINE_SIGN_IN.value:
+            else:
                 print("Sorry, that username was not accepted by the server")
                 self.username = input(
                     f"Please enter a {Colours.coloured('new username', Colours.OKBLUE)}: ")
@@ -139,7 +176,7 @@ class Client:
                 print("You've successfully signed in to the server!")
                 break
 
-            if response_type == Message.DECLINE_SIGN_IN.value:
+            else:
                 print(
                     "Sorry, that username and password combination was not accepted by the server")
                 self.username = input(
@@ -182,22 +219,53 @@ class Client:
         username = input(f"Please enter their {Colours.coloured('username', Colours.OKBLUE)}: ")
 
         if username not in self.ptp_requests:
-            print("Unknown username '{username}'")
+            print(f"Unknown username '{username}'")
             return
 
-        chat = Chat()
-        chat.run()
+        chat = Chat(username)
         self.chats.append(chat)
+        ip_address, port = chat.get_conn_info()
+        Thread(target=chat.start_host).start()
 
-        part_1 = ip_address_to_int(chat.ip_address).to_bytes("little")
-        info = pad_bytes(part_1 + chat.port.to_bytes("little"), 8)
+        part_1 = ip_address_to_int(ip_address).to_bytes(4, "little")
+        info = pad_bytes(part_1 + port.to_bytes(2, "little"), 8)
 
         self.command(Message.ACCEPT_PTP_CONNECTION.value, username.encode(), info)
 
         print("Request accepted. You can now view a chat with them")
 
     def enter_chat(self):
-        print("unimplemented")
+        print("Which chat do you want to enter:")
+        
+        for i in range(len(self.chats)):
+            print(f"({i+1}) {self.chats[i].username}")
+        
+        choice = input("Chat number: ")
+        
+        if not choice.isdecimal():
+            print("Please enter a decimal number")
+            return
+        
+        choice = int(choice)
+        if choice < 1 or choice > len(self.chats):
+            print("Please choose an existing chat")
+            return
+        
+        chat = self.chats[choice - 1]
+
+        print(f"Entering the chat with {chat.username}")
+        print("Enter a message to send it in real time, or q to quit")
+
+        Thread(target=chat.enter_chat).start()
+
+        while True:
+            message = input("Message: ")
+
+            if message == "q":
+                chat.leave_chat()
+                break
+
+            chat.send_message(message)
 
     def sign_out(self):
         self.command(Message.SIGN_OUT.value,
@@ -207,23 +275,118 @@ class Client:
 
 
 class Chat:
-    def __init__(self, host, acc_name, req_name):
-        self.host = host
-        self.acc_name = acc_name
-        self.req_name = req_name
+    def __init__(self, username):
+        self.username = username
+
+        self.in_chat = False
+        self.history = []
+        self.udp_lock = Lock()
 
     def open_port(self):
         while True:
+            # TODO
             random_port = random.randint(15000, 65000)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_sock:
-                if test_sock.connect_ex((self.host, random_port)) == 0:
-                    return random_port
+            #with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_sock:
+            #    if test_sock.connect_ex((socket.gethostname(), random_port)) == 0:
+            #        return random_port
+            return random_port
 
-    def start(self):
-        # Open a TCP socket to communicate intent with the other user
+    def get_conn_info(self):
+        self.ip_address = socket.gethostbyname(socket.gethostname())
+        self.tcp_port = self.open_port()
+        self.udp_port = self.open_port()
+
+        return self.ip_address, self.tcp_port
+
+    def start_host(self):
+        # We use a TCP socket to send data required to set up the UDP socket
+        # We also use the tcp_sock to send files because it preserves order and is reliable
+        self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_sock.bind((self.ip_address, self.tcp_port))
+        self.tcp_sock.listen()
+        self.tcp_sock, _ = self.tcp_sock.accept()
+
+        self.tcp_sock.sendall(self.udp_port.to_bytes(4, "little"))
+        self.other_udp_port = int.from_bytes(self.tcp_sock.recv(4), "little")
+        self.other_ip_address = int_to_ip_address(int.from_bytes(self.tcp_sock.recv(4), "little"))
+
+        # We use the udp_sock to send text messages because order is less vitally important
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.bind((self.ip_address, self.udp_port))
+
+        self.to_address = (self.other_ip_address, self.other_udp_port)
+
+        print("Successfully connected from the accepter's side!")
+        self.send_message("please wowsers")
+
+    def start_requester(self):
+        self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # These are set before this method is called
+        self.tcp_sock.connect((self.host, self.tcp_port))
+
+        # Get UDP port from other client and send our UDP port
+        self.other_udp_port = int.from_bytes(self.tcp_sock.recv(4), "little")
+        self.udp_port = self.open_port()
+        self.tcp_sock.sendall(self.udp_port.to_bytes(4, "little"))
+        self.ip_address = socket.gethostbyname(socket.gethostname())
+        self.tcp_sock.sendall(ip_address_to_int(self.ip_address).to_bytes(4, "little"))
+
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.bind((self.ip_address, self.udp_port))
+
+        self.to_address = (self.host, self.other_udp_port)
+
+        print("Successfully connected from the requester's side!")
+        time.sleep(1)
+        print(self.receive_message())
+
+    def enter_chat(self):
+        # TODO: Clear screen
+        for i in range(len(self.history)):
+            print(f"Message {i + 1}:\n{self.history[i]}\n")
+
+        self.in_chat = True
+
+        i = len(self.history)
+        while self.in_chat:
+            try:
+                # This will throw an error if there is no available message
+
+                message = self.receive_message()
+                print(f"Message {i + 1}:\n{message}\n")
+            except Exception as e:
+                pass
+
+            # TODO: Move this over
+            i += 1
+    
+    def leave_chat(self):
+        self.in_chat = False
+
+    def send_message(self, text):
+        with self.udp_lock:
+            length = len(text).to_bytes(4, "little")
+            message = (b"\x00" * 2) + length + text.encode("utf-8")
+            self.udp_sock.sendto(message, self.to_address)
+
+    def receive_message(self):
+        with self.udp_lock:
+            self.udp_sock.setblocking(False)
+
+            buffer, _ = self.udp_sock.recvfrom(1024)
+            length = int.from_bytes(buffer[2:6], "little")
+            content = buffer[6:6 + length].decode("utf-8")
+            self.udp_sock.setblocking(True)
+
+            self.history.append(content)
+
+            return content
+
+    # TODO
+    def send_file(self):
         pass
 
-    def run(self):
+    def receive_file(self):
         pass
 
 

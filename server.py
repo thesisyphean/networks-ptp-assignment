@@ -165,8 +165,7 @@ class User:
         self.sock.listen()
         self.conn, self.addr = self.sock.accept()
         with self.conn:
-            log.info(
-                f"Connected by {self.addr}, Username: {self.username}")
+            log.info(f"Connected by {self.addr}")
 
             while True:
                 try:

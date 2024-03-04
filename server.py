@@ -5,8 +5,8 @@ from enum import Enum
 import logging
 import struct
 
-log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger("server")
+logging.basicConfig(level=logging.INFO)
 
 
 class Message(Enum):
@@ -24,13 +24,15 @@ class Message(Enum):
     SIGN_OUT = 11
     ALREADY_LOGGED_IN = 12
 
-# 0 pads bytes object to specified length
 def pad_bytes(bytes, length):
+    """Left pad bytes with null bytes"""
     return bytes + b"\x00" * (length - len(bytes))
 
 
 class User:
+    """Manages a connection to a specific client"""
     def __init__(self, sock, server):
+        """Takes a TCP socket and a reference"""
         self.sock = sock
         self.server = server
 
@@ -43,12 +45,11 @@ class User:
 
     def process_command(self, command_bytes):
         """
-        takes input of Message bytes
-        1 byte for Message type, 8 bytes for param 1, 2 bytes for param 2
-        returns Message for reply
+        Takes command bytes
+        1 byte for command type, 8 bytes for param 1, 8 bytes for param 2
         """
+        # The protocol specification is described in the report
         command_type = command_bytes[0]
-        # these indices are subject to change based on username length restrictions and encoding
         param_1 = command_bytes[1:9]
         param_2 = command_bytes[9:17]
 
@@ -73,12 +74,12 @@ class User:
             username = param_1.decode("utf-8")
             password = param_2.decode("utf-8")
 
-            # Decline login if username in list of registered users
+            # Decline login if username in list of current users
             if username in [n.username for n in self.server.users]:
-                # TODO: Error code enum?
                 self.send_command(Message.ALREADY_LOGGED_IN.value)
                 return
 
+            # Confirm correct username and password match
             registered_users = self.server.registered_users
             if username in registered_users and registered_users[username] == password:
                 self.username = username
@@ -105,6 +106,7 @@ class User:
             username = param_1.decode("utf-8")
             user = self.server.get_user(username)
 
+            # User has already signed out
             if not user:
                 log.debug(f"{username} not available")
                 self.send_command(Message.USER_NOT_AVAILABLE.value)
@@ -120,7 +122,7 @@ class User:
             username = param_1.decode("utf-8")
             log.debug(username)
             user = self.server.get_user(username)
-            # ensure user still connected
+            # Ensure user is still connected
             if user:
                 user.send_command(
                     Message.DECLINE_PTP_CONNECTION.value, self.username.encode(
@@ -138,26 +140,28 @@ class User:
                 connection_data,
             )
 
-    # pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded
-    def send_command(self, Message_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
+    def send_command(self, command_num, param_1=b"\x00" * 8, param_2=b"\x00" * 8):
+        """Pads params 1 and 2 with 0s by default, otherwise assumes values if inputed are padded"""
         self.conn.sendall(
             b"\x01"
-            + Message_num.to_bytes(1, "little")
+            + command_num.to_bytes(1, "little")
             + pad_bytes(param_1, 8)
             + pad_bytes(param_2, 8)
         )
 
     def send_data_transfer(self, message, identifier_length, data_length, data):
+        """Sends data transfer, assuming data is encoded"""
         self.conn.sendall(
-            (b"\x80"
+            (b"\x00"
             if message
-            else b"\xc0")
+            else b"\x40")
             + identifier_length.to_bytes(1, "little")
             + data_length.to_bytes(4, "little")
             + data
         )
 
     def run(self):
+        """Waits for requests from the client, handling exceptions were possible"""
         self.sock.listen()
         self.conn, self.addr = self.sock.accept()
         with self.conn:
@@ -192,6 +196,7 @@ class User:
 
 
 class Server:
+    """The main server instance that manages shared state for the application"""
     # This IP adress is standard for the loopback interface
     # Only processes on the host will be able to connect to the server
     HOST = "127.0.0.1"
@@ -200,11 +205,12 @@ class Server:
     def __init__(self):
         self.sockets = []
         self.users_lock = threading.Lock()
+        # List of usernames
         self._users = []
         self.registered_users_lock = threading.Lock()
+        # Dictionary with username/password pairs
         self._registered_users = {}
 
-    # TODO: How the fuck does this work???
     @property
     def users(self):
         with self.users_lock:
@@ -222,6 +228,7 @@ class Server:
                 return user
 
     def get_user_list(self):
+        """Filters any errors from the user list"""
         return list(filter(None, [user.username for user in self.users]))
 
     def remove_user(self, username):
@@ -235,9 +242,11 @@ class Server:
             self._registered_users[username] = password
 
     def ip_address_to_int(ip_address):
+        """Converts an ip address to an int to be sent over a socket"""
         return struct.unpack("!L", socket.inet_aton(ip_address))[0]
 
     def int_to_ip_address(integer):
+        """Converts an int to a ip address to be received over a socket"""
         return socket.inet_ntoa(struct.pack("!L", integer))
 
     def run(self):
@@ -250,9 +259,11 @@ class Server:
             while True:
                 conn, _ = sock.accept()
 
+                # Create a new socket to handle the connection
                 new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 new_port = self.PORT + len(self.users) + 1
                 new_sock.bind((self.HOST, new_port))
+                # Send the new port so it can reconnect
                 conn.sendall(new_port.to_bytes(2, "little"))
 
                 # Create a user connection instance and pass a reference to

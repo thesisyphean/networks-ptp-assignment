@@ -10,7 +10,7 @@ import threading
 import time
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 def pad_bytes(bytes, length):
@@ -32,13 +32,13 @@ class Connection:
         self.username = username
         self.send_address = address
         self.sock_lock = threading.Lock()
+        self.active = True
 
     def run(self):
         log.debug(f"New thread connected to {self.username}")
 
         time.sleep(1)
-
-        while True:
+        while self.active:
             self.recieve_message()
 
     def send_message(self, message):
@@ -60,9 +60,8 @@ class Connection:
 
 
 class Client:
-    def __init__(self, sock, vis):
+    def __init__(self, sock):
         self.sock = sock
-        self.visibility_preference = vis
         self.username = ""
         self.username = ""
         self.logged_in = False
@@ -74,17 +73,20 @@ class Client:
         self.process_login()
 
         while True:
-            bit_0 = self.sock.recv(1)[0]
-            if bit_0 == 1:
-                command_bytes = self.sock.recv(17)
-                self.process_command(command_bytes)
-            # User list from server
-            elif bit_0 == 0:
-                header = self.sock.recv(5)
-                print(header[1:])
-                length = int.from_bytes(header[1:], "little")
-                print(length)
-                print(self.sock.recv(length).decode())
+            try:
+                if self.sock.recv(1, socket.MSG_PEEK) is not None:
+                    bit_0 = self.sock.recv(1)[0]
+                    if bit_0 == 1:
+                        command_bytes = self.sock.recv(17)
+                        self.process_command(command_bytes)
+
+                    # User list from server
+                    elif bit_0 == 0:
+                        header = self.sock.recv(5)
+                        length = int.from_bytes(header[1:], "little")
+                        print(f"User list: {self.sock.recv(length).decode()}.")
+            except:
+                pass
             self.control_flow()
             # wait for server response for better user experience
             time.sleep(1)
@@ -121,10 +123,13 @@ class Client:
                 self.username.encode("utf-8"),
                 self.password.encode("utf-8"),
             )
+        else:
+            print("Could not interperet input.")
+            self.process_login(self)
 
     def control_flow(self):
         print(
-            "Choose an action: Request a (C)onnection, (L)ist online users, (M)essage user, Send (F)ile to user, (R)efresh, (S)ign out"
+            "Choose an action: Request a (C)onnection, (L)ist online users, (M)essage user, (D)isconnect from user, (R)efresh, (S)ign out"
         )
         choice = input().upper()
         if choice == "C":
@@ -136,10 +141,11 @@ class Client:
         elif choice == "L":
             self.send_command(Message.REQUEST_USER_LIST.value)
         elif choice == "M":
+            # check for if there are no connections
             if len(self.connections) == 0:
                 print("There are no active connections.")
-                return
             username = input("Enter username: ")
+            # find and send message to user
             for connection in self.connections:
                 if connection.username.rstrip("\0") == username:
                     message = input("Enter message: ")
@@ -148,19 +154,34 @@ class Client:
                     return
             print("You do not have an active connection with this user.")
         elif choice == "R":
-            print("Refreshing")
+            print("Refreshing...")
         elif choice == "S":
             self.send_command(
                 Message.SIGN_OUT.value, self.username.encode(), self.password.encode()
             )
             print("Bye!")
             exit()
+        elif choice == "D":
+            if len(self.connections) == 0:
+                print("There are no active connections.")
+                return
+            username = input("Enter username: ")
+            for connection in self.connections:
+                if connection.username.rstrip("\0") == username:
+                    connection.active = False
+                    connection.sock.close()
+                    self.connections.remove(connection)
+                    print("Disconnected")
+
+                    return
+        else:
+            print("Couldn't interpreret input.")
 
     # takes input of command bytes
     # 1 byte for command type, 8 bytes for param 1, 2 bytes for param 2
     # returns command for reply
     def process_command(self, command_bytes):
-        log.debug(command_bytes)
+        # log.debug(command_bytes)
         command_type = command_bytes[0]
         # these indices are subject to change based on username length restrictions and encoding
         param_1 = command_bytes[1:9]
@@ -195,7 +216,7 @@ class Client:
                 # create new socket and bind to new port
                 new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 new_sock.bind((self.ip_address, port))
-                # new_sock.listen()
+
                 log.debug(ip.to_bytes(4, "little") + port.to_bytes(2, "little"))
                 # notify requesting client
                 self.send_command(
@@ -203,8 +224,6 @@ class Client:
                     param_1,
                     ip.to_bytes(4, "little") + port.to_bytes(2, "little"),
                 )
-
-                # conn, addr = new_sock.accept()
                 # Create a connection instance and pass a reference to
                 # the current state.
                 connection = Connection(
@@ -213,25 +232,28 @@ class Client:
                     param_1.decode().rstrip("\0"),
                     (self.ip_address, port + 1),
                 )
+                # Add connection to client's list and manage in new thread
                 with self._connections_lock:
                     self.connections.append(connection)
                 Thread(target=connection.run).start()
                 print(f"Connection with {param_1.decode()} established")
+                return
 
             else:
                 self.send_command(Message.DECLINE_PTP_CONNECTION.value, param_1)
         elif command_type == Message.USER_NOT_AVAILABLE.value:
             print("The user to requested to chat is not available")
         elif command_type == Message.DECLINE_PTP_CONNECTION.value:
-            print(f"The user {param_1.decode()} has declined a peer to peer connection")
+            print(
+                f"The user {param_1.decode()} has declined a peer to peer connection."
+            )
 
         elif command_type == Message.ACCEPT_PTP_CONNECTION.value:
             username = param_1.decode("utf-8")
-            print("The user {username} has accepted your connection request")
+            print("The user {username} has accepted your connection request.")
             ip_address = int_to_ip_address(int.from_bytes(param_2[:4], "little"))
             port = int.from_bytes(param_2[4:6], "little")
-            log.debug(f"IP: {ip_address}")
-            log.debug(f"IP: {port}")
+            # create new socket for ptp connection
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind((ip_address, port + 1))
             try:
@@ -240,8 +262,9 @@ class Client:
                 )
                 with self._connections_lock:
                     self.connections.append(connection)
-
+                # manage socket on new thread
                 Thread(target=connection.run).start()
+                print(f"Connection with {username} established")
             except:
                 log.debug("Connection failed")
 
@@ -283,15 +306,7 @@ def main():
         type=int,
     )
 
-    parser.add_argument(
-        "-s",
-        "--invisible",
-        action="store_true",
-        help="Whether to hide the user's username from other users (False)",
-    )
-
     args = parser.parse_args()
-    visibility_preference = False
 
     port = None
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -302,7 +317,7 @@ def main():
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.connect((args.ip_address, port))
-        client = Client(sock, visibility_preference)
+        client = Client(sock)
         client.run()
 
 

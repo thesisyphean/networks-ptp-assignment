@@ -96,7 +96,7 @@ class User:
             if len(users) == 0:
                 data = ""
             else:
-                data = (", ".join(self.server.get_user_list()))
+                data = (", ".join(users))
 
             log.debug(f"Sending data transfer: {data}")
             self.send_data_transfer(True, 0, len(data), data.encode())
@@ -217,12 +217,12 @@ class Server:
                 return user
 
     def get_user_list(self):
-        return [user.username for user in self.users]
+        return list(filter(None, [user.username for user in self.users]))
 
     def remove_user(self, username):
-        for user in self.users:
-            if user.username == username:
-                self.users.remove(user)
+        for i in range(len(self.users)):
+            if self.users[i].username == username:
+                self.users.pop(i)
                 return
 
     def add_registered_user(self, username, password):

@@ -4,9 +4,10 @@ from enum import Enum
 import logging
 import struct
 import random
-from old_server import Command
+from server import Message
 from threading import Thread
 import threading
+import time
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -25,22 +26,37 @@ def int_to_ip_address(integer):
 
 
 class Connection:
-    def __init__(self, sock, client, username):
+    def __init__(self, sock, client, username, address):
         self.sock = sock
         self.client = client
         self.username = username
+        self.send_address = address
+        self.sock_lock = threading.Lock()
 
     def run(self):
-        # TODO Actually be able to send and recieve ptp messages lmao
         log.debug(f"New thread connected to {self.username}")
-        # with self.sock:
-        msg = "hooooowzit".encode("utf-8")
-        with self.sock:
-            self.sock.sendall(msg)
-            data = self.sock.recv(10)
-            print(data.decode("utf-8"))
-            while True:
-                pass
+
+        time.sleep(1)
+
+        while True:
+            self.recieve_message()
+
+    def send_message(self, message):
+        encoded = message.encode("utf=8")
+        self.sock.sendto(
+            b"\x00" + b"\x00" + len(encoded).to_bytes(4, "little") + encoded,
+            self.send_address,
+        )
+
+    def send_file(self, recipient, filename):
+        pass
+
+    # Calls recieve method, decodes, and prints to terminal
+    def recieve_message(self):
+        msg, addr = self.sock.recvfrom(2048)
+        length = int.from_bytes(msg[2:6], "little")
+        message = msg[6:].decode()
+        print(f"Message from {self.username}: {message}")
 
 
 class Client:
@@ -52,41 +68,93 @@ class Client:
         self.logged_in = False
         self.ip_address = "127.0.0.1"
         self.connections = []
+        self._connections_lock = threading.Lock()
 
     def run(self):
-
         self.process_login()
 
         while True:
-            if self.sock.recv(1)[0] == 1:
+            bit_0 = self.sock.recv(1)[0]
+            if bit_0 == 1:
                 command_bytes = self.sock.recv(17)
                 self.process_command(command_bytes)
+            # User list from server
+            elif bit_0 == 0:
+                header = self.sock.recv(5)
+                print(header[1:])
+                length = int.from_bytes(header[1:], "little")
+                print(length)
+                print(self.sock.recv(length).decode())
+            self.control_flow()
+            # wait for server response for better user experience
+            time.sleep(1)
 
-            # if not self.username_logged_in:
-            #     self.send_command(
-            #         Command.SEND_USERNAME.value, self.username.encode("utf-8")
-            #     )
-
+    # Takes input for username and password, ensuring they are short enough
     def process_login(self):
-        choice = input("Would you like to (L)ogin or (R)egister: ")
+        choice = input("Would you like to (L)ogin or (R)egister: ").upper()
         if choice == "R":
-            self.username = input("Please choose a username, max 8 bytes: ")
-            self.password = input("Please choose a password, max 8 bytes: ")
-            # check byte limits
+            while True:
+                self.username = input("Please choose a username, max 8 bytes: ")
+                self.password = input("Please choose a password, max 8 bytes: ")
+                if len(self.username.encode()) > 8 or len(self.password.encode()) > 8:
+                    print("Username or password too long")
+                else:
+                    break
+
             self.send_command(
-                Command.REGISTER.value,
+                Message.SIGN_UP.value,
                 self.username.encode("utf-8"),
                 self.password.encode("utf-8"),
             )
+
         elif choice == "L":
-            self.username = input("Enter username, max 8 bytes: ")
-            self.password = input("Enter password, max 8 bytes: ")
-            # check byte limits
+            while True:
+                self.username = input("Enter username, max 8 bytes: ")
+                self.password = input("Enter password, max 8 bytes: ")
+                if len(self.username.encode()) > 8 or len(self.password.encode()) > 8:
+                    print("Username or password too long")
+                else:
+                    break
+
             self.send_command(
-                Command.LOGIN.value,
+                Message.SIGN_IN.value,
                 self.username.encode("utf-8"),
                 self.password.encode("utf-8"),
             )
+
+    def control_flow(self):
+        print(
+            "Choose an action: Request a (C)onnection, (L)ist online users, (M)essage user, Send (F)ile to user, (R)efresh, (S)ign out"
+        )
+        choice = input().upper()
+        if choice == "C":
+            username = input("Enter username: ")
+            self.send_command(
+                Message.REQUEST_PTP_CONNECTION.value, username.encode("utf-8")
+            )
+            print("Request sent. You will be notified when there is a response.")
+        elif choice == "L":
+            self.send_command(Message.REQUEST_USER_LIST.value)
+        elif choice == "M":
+            if len(self.connections) == 0:
+                print("There are no active connections.")
+                return
+            username = input("Enter username: ")
+            for connection in self.connections:
+                if connection.username.rstrip("\0") == username:
+                    message = input("Enter message: ")
+                    connection.send_message(message)
+                    print("Message sent")
+                    return
+            print("You do not have an active connection with this user.")
+        elif choice == "R":
+            print("Refreshing")
+        elif choice == "S":
+            self.send_command(
+                Message.SIGN_OUT.value, self.username.encode(), self.password.encode()
+            )
+            print("Bye!")
+            exit()
 
     # takes input of command bytes
     # 1 byte for command type, 8 bytes for param 1, 2 bytes for param 2
@@ -98,75 +166,80 @@ class Client:
         param_1 = command_bytes[1:9]
         param_2 = command_bytes[9:18]
 
-        if command_type == Command.ACCEPT_LOGIN.value:
-            print(f"Logged in as {param_1.decode('utf-8')}")
+        if command_type == Message.ACCEPT_SIGN_IN.value:
+            print(f"Logged in as {self.username}.")
             self.username_accepted = True
-            if input("send connection request? ") == "yes":
-                self.send_command(
-                    Command.REQUEST_PTP_CONNECTION.value, "b".encode("utf-8")
-                )
-
-        elif command_type == Command.DECLINE_REGISTER.value:
+        elif command_type == Message.DECLINE_SIGN_UP.value:
             print("This username is taken.")
             self.process_login()
-        elif command_type == Command.DECLINE_LOGIN.value:
+        elif command_type == Message.DECLINE_SIGN_IN.value:
             print("Incorrect username or password.")
             self.process_login()
 
-        elif command_type == Command.ALREADY_LOGGED_IN.value:
+        elif command_type == Message.ALREADY_LOGGED_IN.value:
             print("This user is already logged in.")
             self.process_login()
 
-        elif command_type == Command.RELAY_PTP_REQUEST.value:
+        elif command_type == Message.RELAY_PTP_REQUEST.value:
             print(
-                f"The user {param_1.decode()} has requested a peer to peer connection"
+                f"The user {param_1.decode()} has requested a peer to peer connection."
             )
-            if input("Would you like to accept this connection? (yes/no): ") == "yes":
+            if (
+                input("Would you like to accept this connection? (Y)es/(N)o: ").upper()
+                == "Y"
+            ):
                 ip = ip_address_to_int(self.ip_address)
                 port = 10000 + random.randint(0, 10000)
                 log.debug(f"Port: {port}, ip: {ip}")
 
                 # create new socket and bind to new port
-                new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 new_sock.bind((self.ip_address, port))
-                new_sock.listen()
+                # new_sock.listen()
                 log.debug(ip.to_bytes(4, "little") + port.to_bytes(2, "little"))
                 # notify requesting client
                 self.send_command(
-                    Command.ACCEPT_PTP_CONNECTION.value,
+                    Message.ACCEPT_PTP_CONNECTION.value,
                     param_1,
                     ip.to_bytes(4, "little") + port.to_bytes(2, "little"),
                 )
 
-                conn, addr = new_sock.accept()
+                # conn, addr = new_sock.accept()
                 # Create a connection instance and pass a reference to
                 # the current state.
-                connection = Connection(conn, self, param_1.decode())
-                self.connections.append(connection)
+                connection = Connection(
+                    new_sock,
+                    self,
+                    param_1.decode().rstrip("\0"),
+                    (self.ip_address, port + 1),
+                )
+                with self._connections_lock:
+                    self.connections.append(connection)
                 Thread(target=connection.run).start()
+                print(f"Connection with {param_1.decode()} established")
 
             else:
-                self.send_command(Command.DECLINE_PTP_CONNECTION.value, param_1)
-        elif command_type == Command.USER_NOT_AVAILABLE.value:
-            print("user not available")
-        elif command_type == Command.DECLINE_PTP_CONNECTION.value:
+                self.send_command(Message.DECLINE_PTP_CONNECTION.value, param_1)
+        elif command_type == Message.USER_NOT_AVAILABLE.value:
+            print("The user to requested to chat is not available")
+        elif command_type == Message.DECLINE_PTP_CONNECTION.value:
             print(f"The user {param_1.decode()} has declined a peer to peer connection")
 
-        elif command_type == Command.ACCEPT_PTP_CONNECTION.value:
-            username = param_1.decode()
-            log.debug(f"The user {username} has accepted your connection request")
+        elif command_type == Message.ACCEPT_PTP_CONNECTION.value:
+            username = param_1.decode("utf-8")
+            print("The user {username} has accepted your connection request")
             ip_address = int_to_ip_address(int.from_bytes(param_2[:4], "little"))
-            ip_address = "127.0.0.1"
             port = int.from_bytes(param_2[4:6], "little")
             log.debug(f"IP: {ip_address}")
             log.debug(f"IP: {port}")
-            # with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind((ip_address, port + 1))
             try:
-                sock.connect((ip_address, port))
-                connection = Connection(sock, self, username)
-
-                self.connections.append(connection)
+                connection = Connection(
+                    sock, self, username.rstrip("\0"), (ip_address, port)
+                )
+                with self._connections_lock:
+                    self.connections.append(connection)
 
                 Thread(target=connection.run).start()
             except:
@@ -180,6 +253,16 @@ class Client:
             + pad_bytes(param_1, 8)
             + pad_bytes(param_2, 8)
         )
+
+    def get_connection(self, recipient):
+        with self._connections_lock:
+            for connection in self.connections:
+                if connection.username == recipient:
+                    return connection
+
+    def connections(self):
+        with self._connections_lock:
+            return self._connections
 
 
 def main():

@@ -6,8 +6,8 @@ This project explores TCP and UDP socket programming and involves creating a cha
 
 ## Usage
 
-The server can be started with `python server.py` and runs on the loopback interface on port 65432.
-The client can be started with `python client.py <username>` where username is required. The client also takes other command-line arguments, such as the IP address and port of the server, as listed by `python client.py -h`.
+The server can be started with `python src/server.py` and runs on the loopback interface on port 65432.
+The client can be started with `python src/client.py <username>` where username is required. The client also takes other command-line arguments, such as the IP address and port of the server, as listed by `python client.py -h`.
 
 ## Messages
 
